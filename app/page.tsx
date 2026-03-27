@@ -7,7 +7,11 @@ import IntentPanel from "@/components/IntentPanel";
 import TemperatureMeter from "@/components/TemperatureMeter";
 import { pickSupportedMimeType } from "@/lib/audio";
 import type { InferenceItem, TranscriptItem } from "@/types/inference";
-import type { VerificationResult, VerificationStatus } from "@/types/verification";
+import type {
+  EvidenceVerdict,
+  VerificationResult,
+  VerificationStatus
+} from "@/types/verification";
 
 const CONTEXT_WINDOW_MS = 15_000;
 const CONTEXT_MAX_ITEMS = 8;
@@ -87,6 +91,42 @@ const VERIFY_STATUS_META: Record<
   },
   out_of_scope: {
     label: "対象外",
+    color: "text-slate-500",
+    border: "border-slate-200",
+    bg: "bg-slate-50"
+  }
+};
+
+const EXTERNAL_VERDICT_META: Record<
+  EvidenceVerdict,
+  { label: string; color: string; border: string; bg: string }
+> = {
+  supported: {
+    label: "根拠あり",
+    color: "text-emerald-700",
+    border: "border-emerald-200",
+    bg: "bg-emerald-50"
+  },
+  contradicted: {
+    label: "矛盾あり",
+    color: "text-rose-700",
+    border: "border-rose-200",
+    bg: "bg-rose-50"
+  },
+  mixed: {
+    label: "根拠混在",
+    color: "text-amber-700",
+    border: "border-amber-200",
+    bg: "bg-amber-50"
+  },
+  insufficient: {
+    label: "根拠不足",
+    color: "text-slate-600",
+    border: "border-slate-200",
+    bg: "bg-slate-50"
+  },
+  unavailable: {
+    label: "未実行",
     color: "text-slate-500",
     border: "border-slate-200",
     bg: "bg-slate-50"
@@ -377,6 +417,9 @@ export default function Home() {
   const latestVerificationStatus =
     latestVerification?.status ?? "uncertain";
   const verificationMeta = VERIFY_STATUS_META[latestVerificationStatus];
+  const latestExternalCheck = latestVerification?.external_check;
+  const externalCheckMeta =
+    EXTERNAL_VERDICT_META[latestExternalCheck?.verdict ?? "unavailable"];
   const canStart = situationNote.trim().length > 0;
   const assistantHints = [
     ...(latestVerification?.public_topics?.map((topic) => topic.topic) ?? []),
@@ -592,7 +635,15 @@ export default function Home() {
           latestUtterance,
           sessionContext,
           verificationTopics: latestVerification?.public_topics ?? [],
-          suggestedQueries: latestVerification?.suggested_queries ?? []
+          suggestedQueries: latestVerification?.suggested_queries ?? [],
+          externalCheck: latestVerification?.external_check
+            ? {
+                verdict: latestVerification.external_check.verdict,
+                summary: latestVerification.external_check.summary,
+                claim_checks: latestVerification.external_check.claim_checks,
+                sources: latestVerification.external_check.sources.slice(0, 4)
+              }
+            : null
         })
       });
       const data = await response.json();
@@ -992,14 +1043,30 @@ export default function Home() {
               typeof verifyPayload.confidence === "number"
                 ? verifyPayload.confidence
                 : 0,
-            basis_utterance: verifyPayload.basis_utterance ?? utterance
+            basis_utterance: verifyPayload.basis_utterance ?? utterance,
+            external_check:
+              verifyPayload.external_check &&
+              typeof verifyPayload.external_check === "object"
+                ? verifyPayload.external_check
+                : {
+                    enabled: false,
+                    verdict: "unavailable",
+                    summary: "外部検索は未実行です。",
+                    confidence: 0,
+                    searched_queries: [],
+                    sources: [],
+                    claim_checks: []
+                  }
           };
 
           const signature = JSON.stringify({
             status: result.status,
             summary: result.summary,
             topics: result.public_topics.map((topic) => topic.topic),
-            queries: result.suggested_queries
+            queries: result.suggested_queries,
+            externalVerdict: result.external_check.verdict,
+            externalSummary: result.external_check.summary,
+            externalSources: result.external_check.sources.map((source) => source.url)
           });
           if (meta && meta.lastSig === signature) {
             verifyMetaRef.current[targetId] = {
@@ -1451,11 +1518,18 @@ export default function Home() {
             <span className="min-w-0 flex-1 text-xs tracking-[0.2em] text-slate-400 leading-relaxed whitespace-normal break-words">
               検証アシスト
             </span>
-            <span
-              className={`rounded-full border px-3 py-1 text-xs font-semibold ${verificationMeta.border} ${verificationMeta.bg} ${verificationMeta.color}`}
-            >
-              {verificationMeta.label}
-            </span>
+            <div className="flex flex-wrap gap-2">
+              <span
+                className={`rounded-full border px-3 py-1 text-xs font-semibold ${verificationMeta.border} ${verificationMeta.bg} ${verificationMeta.color}`}
+              >
+                {verificationMeta.label}
+              </span>
+              <span
+                className={`rounded-full border px-3 py-1 text-xs font-semibold ${externalCheckMeta.border} ${externalCheckMeta.bg} ${externalCheckMeta.color}`}
+              >
+                外部照合: {externalCheckMeta.label}
+              </span>
+            </div>
           </div>
           <div className="mt-2 text-sm text-slate-700">
             <span className="break-all leading-relaxed">
@@ -1475,6 +1549,66 @@ export default function Home() {
             <div className="mt-2 text-xs text-slate-500 break-all leading-relaxed">
               調べるワード:{" "}
               {latestVerification.suggested_queries.slice(0, 4).join(" / ")}
+            </div>
+          ) : null}
+          {latestExternalCheck?.summary ? (
+            <div className="mt-3 rounded-lg border border-slate-200/70 bg-slate-50/80 px-3 py-2 text-xs text-slate-600">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                外部照合サマリー
+              </div>
+              <div className="mt-1 break-all leading-relaxed">
+                {latestExternalCheck.summary}
+              </div>
+            </div>
+          ) : null}
+          {latestExternalCheck?.claim_checks?.length ? (
+            <div className="mt-3 space-y-2 text-xs text-slate-600">
+              {latestExternalCheck.claim_checks.slice(0, 3).map((check, index) => {
+                const meta = EXTERNAL_VERDICT_META[check.verdict];
+                return (
+                  <div
+                    key={`${check.claim}-${index}`}
+                    className="rounded-lg border border-slate-200/70 bg-white/70 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1 break-all font-medium text-slate-700">
+                        {check.claim}
+                      </div>
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${meta.border} ${meta.bg} ${meta.color}`}
+                      >
+                        {meta.label}
+                      </span>
+                    </div>
+                    <div className="mt-1 break-all leading-relaxed">{check.reason}</div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {latestExternalCheck?.sources?.length ? (
+            <div className="mt-3 space-y-2 text-xs text-slate-600">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                参照ソース
+              </div>
+              {latestExternalCheck.sources.slice(0, 3).map((source) => (
+                <a
+                  key={`${source.url}-${source.query}`}
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block rounded-lg border border-slate-200/70 bg-white/80 px-3 py-2 hover:border-slate-300"
+                >
+                  <div className="break-all font-medium text-slate-700">{source.title}</div>
+                  <div className="mt-1 text-[11px] text-slate-400">
+                    {source.domain || source.query}
+                    {source.published_date ? ` / ${source.published_date}` : ""}
+                  </div>
+                  <div className="mt-1 break-all leading-relaxed text-slate-500">
+                    {source.snippet}
+                  </div>
+                </a>
+              ))}
             </div>
           ) : null}
         </div>

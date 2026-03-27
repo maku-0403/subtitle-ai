@@ -45,6 +45,10 @@ export async function POST(request: Request) {
     const suggestedQueries = Array.isArray(body?.suggestedQueries)
       ? body.suggestedQueries
       : [];
+    const externalCheck =
+      body?.externalCheck && typeof body.externalCheck === "object"
+        ? body.externalCheck
+        : null;
 
     const messages = [
       { role: "system", content: ASSISTANT_SYSTEM_PROMPT },
@@ -56,7 +60,8 @@ export async function POST(request: Request) {
           latest_utterance: latestUtterance,
           session_context: sessionContext,
           verification_topics: verificationTopics,
-          suggested_queries: suggestedQueries
+          suggested_queries: suggestedQueries,
+          external_check: externalCheck
         })
       }
     ];
@@ -97,12 +102,10 @@ export async function POST(request: Request) {
       typeof (parsed as { answer?: string }).answer === "string"
         ? (parsed as { answer?: string }).answer
         : "";
+    const followupsValue = (parsed as { followups?: unknown[] }).followups;
+    const rawFollowups: unknown[] = Array.isArray(followupsValue) ? followupsValue : [];
     const followups =
-      Array.isArray((parsed as { followups?: unknown[] }).followups)
-        ? (parsed as { followups?: unknown[] }).followups
-            .filter((item) => typeof item === "string")
-            .slice(0, 4)
-        : [];
+      rawFollowups.filter((item): item is string => typeof item === "string").slice(0, 4);
 
     return NextResponse.json({ answer, followups });
   } catch (error) {
