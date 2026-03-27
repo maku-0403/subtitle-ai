@@ -8,12 +8,12 @@ export default function IntentPanel({ items }: IntentPanelProps) {
   return (
     <div className="panel flex h-full flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
-        <h2 className="panel-title">意図推定</h2>
-        <span className="text-xs text-slate-400">発話ごとの推定</span>
+        <h2 className="panel-title">発話分析</h2>
+        <span className="text-xs text-slate-400">発話ごとの役割推定</span>
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto pr-2">
         {items.length === 0 && (
-          <p className="text-sm text-slate-400">推定結果が表示されます。</p>
+          <p className="text-sm text-slate-400">分析結果が表示されます。</p>
         )}
         {items.map((item, index) => {
           const isLatest = index === items.length - 1;

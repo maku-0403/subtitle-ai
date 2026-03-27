@@ -3,53 +3,61 @@ import type { Dispatch, SetStateAction } from "react";
 interface CaptureControlsProps {
   captureMode: "tab" | "mic";
   setCaptureMode: Dispatch<SetStateAction<"tab" | "mic">>;
-  relationship: string;
-  setRelationship: Dispatch<SetStateAction<string>>;
-  situationNote: string;
-  setSituationNote: Dispatch<SetStateAction<string>>;
+  contentType: string;
+  setContentType: Dispatch<SetStateAction<string>>;
+  analysisNote: string;
+  setAnalysisNote: Dispatch<SetStateAction<string>>;
   inputLanguage: "auto" | "ja" | "en";
   setInputLanguage: Dispatch<SetStateAction<"auto" | "ja" | "en">>;
   canStart: boolean;
+  canClear: boolean;
+  canGenerateReport: boolean;
   isRecording: boolean;
   isProcessing: boolean;
+  isGeneratingReport: boolean;
   onStart: () => void;
   onStop: () => void;
   onClear: () => void;
+  onGenerateReport: () => void;
 }
 
 export default function CaptureControls({
   captureMode,
   setCaptureMode,
-  relationship,
-  setRelationship,
-  situationNote,
-  setSituationNote,
+  contentType,
+  setContentType,
+  analysisNote,
+  setAnalysisNote,
   inputLanguage,
   setInputLanguage,
   canStart,
+  canClear,
+  canGenerateReport,
   isRecording,
   isProcessing,
+  isGeneratingReport,
   onStart,
   onStop,
-  onClear
+  onClear,
+  onGenerateReport
 }: CaptureControlsProps) {
   return (
     <div className="panel flex flex-col gap-4 p-4">
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="panel-title">相手との関係</span>
+          <span className="panel-title">コンテンツ種別</span>
           <select
-            className="min-w-[180px] rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-slate-700"
-            value={relationship}
-            onChange={(event) => setRelationship(event.target.value)}
+            className="min-w-[220px] rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-slate-700"
+            value={contentType}
+            onChange={(event) => setContentType(event.target.value)}
             disabled={isRecording}
           >
-            <option value="不明">不明</option>
-            <option value="友達">友達</option>
-            <option value="同僚">同僚</option>
-            <option value="面接官">面接官</option>
-            <option value="取引先">取引先</option>
-            <option value="顧客">顧客</option>
+            <option value="YouTube動画">YouTube動画</option>
+            <option value="オンライン会議">オンライン会議</option>
+            <option value="セミナー・講習">セミナー・講習</option>
+            <option value="商談・面接">商談・面接</option>
+            <option value="雑談・会話">雑談・会話</option>
+            <option value="その他">その他</option>
           </select>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -69,18 +77,18 @@ export default function CaptureControls({
         </div>
         <div className="space-y-2">
           <span className="panel-title">
-            状況メモ <span className="text-rose-500">*</span>
+            分析メモ <span className="text-rose-500">*</span>
           </span>
           <textarea
             className="min-h-[240px] w-full resize-none rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-slate-700"
-            placeholder="例: 最終面接の序盤。裏の意図が含まれる可能性が高い。"
-            value={situationNote}
-            onChange={(event) => setSituationNote(event.target.value)}
+            placeholder="例: 動画の要点整理と事実確認をしたい。講習の重要ポイントと怪しい主張を見たい。"
+            value={analysisNote}
+            onChange={(event) => setAnalysisNote(event.target.value)}
             disabled={isRecording}
           />
           {!canStart && (
             <p className="text-xs text-rose-500">
-              状況メモを入力してください
+              分析メモを入力してください
             </p>
           )}
         </div>
@@ -128,13 +136,24 @@ export default function CaptureControls({
         <button
           className="rounded-full border border-slate-300 px-5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
           onClick={onClear}
+          disabled={!canClear}
         >
           Clear
+        </button>
+        <button
+          className="rounded-full border border-slate-300 px-5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={onGenerateReport}
+          disabled={!canGenerateReport || isGeneratingReport}
+        >
+          {isGeneratingReport ? "レポート生成中" : "レポート生成"}
         </button>
         <span className="text-xs text-slate-500">
           {isProcessing ? "処理中" : "待機中"}
         </span>
       </div>
+      <p className="text-xs text-slate-500">
+        要約・検証対象は Clear 後の最初の Start からです。
+      </p>
     </div>
   );
 }

@@ -21,17 +21,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ answer: "" }, { status: 400 });
     }
 
-    const conversationContext =
-      body?.conversationContext && typeof body.conversationContext === "object"
-        ? body.conversationContext
+    const contentContext =
+      body?.contentContext && typeof body.contentContext === "object"
+        ? body.contentContext
         : {};
-    const relationship =
-      typeof conversationContext?.relationship === "string"
-        ? conversationContext.relationship
-        : "不明";
-    const situation =
-      typeof conversationContext?.situation === "string"
-        ? conversationContext.situation
+    const contentType =
+      typeof contentContext?.contentType === "string"
+        ? contentContext.contentType
+        : "YouTube動画";
+    const analysisNote =
+      typeof contentContext?.analysisNote === "string"
+        ? contentContext.analysisNote
         : "";
 
     const latestUtterance =
@@ -56,7 +56,10 @@ export async function POST(request: Request) {
         role: "user",
         content: buildAssistantUserPrompt({
           question,
-          conversation_context: { relationship, situation },
+          content_context: {
+            content_type: contentType,
+            analysis_note: analysisNote
+          },
           latest_utterance: latestUtterance,
           session_context: sessionContext,
           verification_topics: verificationTopics,

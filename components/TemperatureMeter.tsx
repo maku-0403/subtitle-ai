@@ -18,7 +18,7 @@ export default function TemperatureMeter({ temperature }: TemperatureMeterProps)
   return (
     <div className="panel flex h-full flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
-        <h2 className="panel-title">温度感</h2>
+        <h2 className="panel-title">伝え方の強さ</h2>
         <span className="text-xs text-slate-400">5段階</span>
       </div>
       <div className="flex flex-1 flex-col items-center justify-between gap-4">

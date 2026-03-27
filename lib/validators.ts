@@ -5,12 +5,12 @@ import type {
 } from "@/types/inference";
 
 export const INTENT_LABELS: IntentLabel[] = [
-  "前向き",
-  "条件付き前向き",
-  "保留",
+  "主張",
+  "説明",
+  "注意喚起",
+  "意見・宣伝",
+  "確認・保留",
   "情報不足",
-  "やんわり拒否",
-  "社交辞令寄り",
   "判断困難"
 ];
 

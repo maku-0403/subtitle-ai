@@ -1,12 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import AudioSummaryWidget from "@/components/AudioSummaryWidget";
 import CaptureControls from "@/components/CaptureControls";
+import ReportPanel from "@/components/ReportPanel";
 import TranscriptPanel from "@/components/TranscriptPanel";
 import IntentPanel from "@/components/IntentPanel";
 import TemperatureMeter from "@/components/TemperatureMeter";
 import { pickSupportedMimeType } from "@/lib/audio";
 import type { InferenceItem, TranscriptItem } from "@/types/inference";
+import type { GeneratedReport, ReportSegment, ReportSessionData } from "@/types/report";
 import type {
   EvidenceVerdict,
   VerificationResult,
@@ -58,12 +61,12 @@ const INTENT_TONE_CLASSES: Record<
   string,
   { bg: string; border: string; text: string }
 > = {
-  前向き: { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-700" },
-  条件付き前向き: { bg: "bg-sky-50", border: "border-sky-200", text: "text-sky-700" },
-  保留: { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-700" },
+  主張: { bg: "bg-sky-50", border: "border-sky-200", text: "text-sky-700" },
+  説明: { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-700" },
+  注意喚起: { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-700" },
+  "意見・宣伝": { bg: "bg-fuchsia-50", border: "border-fuchsia-200", text: "text-fuchsia-700" },
+  "確認・保留": { bg: "bg-cyan-50", border: "border-cyan-200", text: "text-cyan-700" },
   情報不足: { bg: "bg-cyan-50", border: "border-cyan-200", text: "text-cyan-700" },
-  やんわり拒否: { bg: "bg-rose-50", border: "border-rose-200", text: "text-rose-700" },
-  社交辞令寄り: { bg: "bg-slate-50", border: "border-slate-200", text: "text-slate-600" },
   判断困難: { bg: "bg-slate-50", border: "border-slate-200", text: "text-slate-500" }
 };
 
@@ -306,6 +309,39 @@ async function fetchWithRetry(
   }
 }
 
+function createEmptyReportSession(): ReportSessionData {
+  return {
+    id: null,
+    clearAt: Date.now(),
+    firstStartAt: null,
+    lastStopAt: null,
+    segments: [],
+    transcripts: [],
+    inferences: [],
+    verifications: []
+  };
+}
+
+function formatExportTimestamp(timestamp: number | null) {
+  const date = new Date(timestamp ?? Date.now());
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(
+    date.getHours()
+  )}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function downloadTextFile(filename: string, content: string, contentType: string) {
+  const blob = new Blob([content], { type: contentType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function Home() {
   const [captureMode, setCaptureMode] = useState<"tab" | "mic">("tab");
   const [isRecording, setIsRecording] = useState(false);
@@ -320,8 +356,8 @@ export default function Home() {
   const [inputLevel, setInputLevel] = useState(0);
   const [lastChunkInfo, setLastChunkInfo] = useState<string>("なし");
   const [liveUtterance, setLiveUtterance] = useState<string>("");
-  const [relationship, setRelationship] = useState("不明");
-  const [situationNote, setSituationNote] = useState("");
+  const [contentType, setContentType] = useState("YouTube動画");
+  const [analysisNote, setAnalysisNote] = useState("");
   const [inputLanguage, setInputLanguage] = useState<"auto" | "ja" | "en">(
     "auto"
   );
@@ -335,9 +371,26 @@ export default function Home() {
     pace: "slow",
     pitch: "low"
   });
+  const [reportSession, setReportSession] = useState<ReportSessionData>(
+    createEmptyReportSession()
+  );
+  const [generatedReport, setGeneratedReport] = useState<GeneratedReport | null>(
+    null
+  );
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [reportErrorMessage, setReportErrorMessage] = useState<string | null>(
+    null
+  );
+  const [reportVersion, setReportVersion] = useState(0);
+  const [analysisQueueState, setAnalysisQueueState] = useState({
+    inferencePending: 0,
+    verifyPending: 0,
+    inferenceRunning: false,
+    verifyRunning: false
+  });
   const captureModeRef = useRef<"tab" | "mic">("tab");
-  const relationshipRef = useRef<string>("不明");
-  const situationNoteRef = useRef<string>("");
+  const contentTypeRef = useRef<string>("YouTube動画");
+  const analysisNoteRef = useRef<string>("");
   const inputLanguageRef = useRef<"auto" | "ja" | "en">("auto");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -362,6 +415,9 @@ export default function Home() {
   const rmsHistoryRef = useRef<number[]>([]);
   const zcrHistoryRef = useRef<number[]>([]);
   const toneUpdateCounterRef = useRef(0);
+  const reportSessionRef = useRef<ReportSessionData>(createEmptyReportSession());
+  const reportVersionRef = useRef(0);
+  const verificationEnabledRef = useRef(false);
   const inferenceMetaRef = useRef<
     Record<string, { lastAt: number; lastLabel: string; lastText: string }>
   >({});
@@ -420,11 +476,126 @@ export default function Home() {
   const latestExternalCheck = latestVerification?.external_check;
   const externalCheckMeta =
     EXTERNAL_VERDICT_META[latestExternalCheck?.verdict ?? "unavailable"];
-  const canStart = situationNote.trim().length > 0;
+  const canStart = analysisNote.trim().length > 0;
   const assistantHints = [
     ...(latestVerification?.public_topics?.map((topic) => topic.topic) ?? []),
     ...(latestVerification?.suggested_queries ?? [])
   ].filter(Boolean);
+  const hasBlockingAnalysis =
+    isProcessing ||
+    analysisQueueState.inferencePending > 0 ||
+    analysisQueueState.inferenceRunning;
+  const hasPendingVerification =
+    analysisQueueState.verifyPending > 0 || analysisQueueState.verifyRunning;
+  const canGenerateReport =
+    !isRecording &&
+    !hasBlockingAnalysis &&
+    reportSession.firstStartAt !== null &&
+    reportSession.transcripts.length > 0;
+  const canClear = !isRecording && !hasBlockingAnalysis && !isGeneratingReport;
+  const isReportStale =
+    generatedReport !== null && generatedReport.sourceVersion !== reportVersion;
+
+  const syncAnalysisQueueState = () => {
+    setAnalysisQueueState({
+      inferencePending: inferenceQueueRef.current.length,
+      verifyPending: verifyQueueRef.current.length,
+      inferenceRunning: inferenceQueueRunningRef.current,
+      verifyRunning: verifyQueueRunningRef.current
+    });
+  };
+
+  const mutateReportSession = (
+    updater: (prev: ReportSessionData) => ReportSessionData
+  ) => {
+    const prev = reportSessionRef.current;
+    const next = updater(prev);
+    if (next === prev) return prev;
+    reportSessionRef.current = next;
+    setReportSession(next);
+    reportVersionRef.current += 1;
+    setReportVersion(reportVersionRef.current);
+    return next;
+  };
+
+  const appendReportTranscript = (item: TranscriptItem) => {
+    mutateReportSession((prev) => ({
+      ...prev,
+      transcripts: [...prev.transcripts, item]
+    }));
+  };
+
+  const updateReportTranscriptText = (id: string, text: string) => {
+    mutateReportSession((prev) => {
+      const index = prev.transcripts.findIndex((item) => item.id === id);
+      if (index === -1) return prev;
+      if (prev.transcripts[index].text === text) return prev;
+      const transcripts = prev.transcripts.slice();
+      transcripts[index] = { ...transcripts[index], text };
+      return { ...prev, transcripts };
+    });
+  };
+
+  const upsertReportInference = (item: InferenceItem) => {
+    mutateReportSession((prev) => {
+      const index = prev.inferences.findIndex((entry) => entry.id === item.id);
+      if (index === -1) {
+        return { ...prev, inferences: [...prev.inferences, item] };
+      }
+      const inferences = prev.inferences.slice();
+      inferences[index] = item;
+      return { ...prev, inferences };
+    });
+  };
+
+  const upsertReportVerification = (item: VerificationResult) => {
+    mutateReportSession((prev) => {
+      const index = prev.verifications.findIndex((entry) => entry.id === item.id);
+      if (index === -1) {
+        return { ...prev, verifications: [...prev.verifications, item] };
+      }
+      const verifications = prev.verifications.slice();
+      verifications[index] = item;
+      return { ...prev, verifications };
+    });
+  };
+
+  const beginReportSegment = (startedAt: number) => {
+    mutateReportSession((prev) => {
+      const segment: ReportSegment = {
+        id: crypto.randomUUID(),
+        startAt: startedAt,
+        stopAt: null,
+        captureMode: captureModeRef.current,
+        contentType: contentTypeRef.current,
+        analysisNote: analysisNoteRef.current
+      };
+      return {
+        ...prev,
+        id: prev.id ?? crypto.randomUUID(),
+        firstStartAt: prev.firstStartAt ?? startedAt,
+        lastStopAt: null,
+        segments: [...prev.segments, segment]
+      };
+    });
+  };
+
+  const closeReportSegment = (stoppedAt: number) => {
+    mutateReportSession((prev) => {
+      const index = [...prev.segments]
+        .reverse()
+        .findIndex((segment) => segment.stopAt === null);
+      if (index === -1) return prev;
+      const targetIndex = prev.segments.length - 1 - index;
+      const segments = prev.segments.slice();
+      segments[targetIndex] = { ...segments[targetIndex], stopAt: stoppedAt };
+      return {
+        ...prev,
+        lastStopAt: stoppedAt,
+        segments
+      };
+    });
+  };
 
   const updateTranscriptItems = (next: TranscriptItem[]) => {
     transcriptRef.current = next;
@@ -460,6 +631,7 @@ export default function Home() {
       -MAX_TRANSCRIPT_ITEMS
     );
     updateTranscriptItems(updated);
+    appendReportTranscript(nextTranscript);
     return id;
   };
 
@@ -472,6 +644,7 @@ export default function Home() {
     if (list[index].text === trimmed) return;
     list[index] = { ...list[index], text: trimmed };
     updateTranscriptItems(list);
+    updateReportTranscriptText(id, trimmed);
   };
 
   const updateInferenceItems = (next: InferenceItem[]) => {
@@ -493,6 +666,7 @@ export default function Home() {
       list.push(item);
     }
     updateVerificationItems(list.slice(-MAX_INFERENCE_ITEMS));
+    upsertReportVerification(item);
   };
 
   const upsertInferenceItem = (item: InferenceItem) => {
@@ -504,6 +678,7 @@ export default function Home() {
       list.push(item);
     }
     updateInferenceItems(list.slice(-MAX_INFERENCE_ITEMS));
+    upsertReportInference(item);
   };
 
   const finalizeLiveUtterance = (timestamp: number) => {
@@ -525,12 +700,12 @@ export default function Home() {
   }, [captureMode]);
 
   useEffect(() => {
-    relationshipRef.current = relationship;
-  }, [relationship]);
+    contentTypeRef.current = contentType;
+  }, [contentType]);
 
   useEffect(() => {
-    situationNoteRef.current = situationNote;
-  }, [situationNote]);
+    analysisNoteRef.current = analysisNote;
+  }, [analysisNote]);
 
   useEffect(() => {
     inputLanguageRef.current = inputLanguage;
@@ -558,32 +733,37 @@ export default function Home() {
     verifyMetaRef.current = {};
     verifyQueueRef.current = [];
     verifyQueueRunningRef.current = false;
+    verificationEnabledRef.current = false;
     if (verifyQueueTimerRef.current !== null) {
       window.clearTimeout(verifyQueueTimerRef.current);
       verifyQueueTimerRef.current = null;
     }
     setAssistantMessages([]);
     setAssistantInput("");
+    const nextReportSession = createEmptyReportSession();
+    reportSessionRef.current = nextReportSession;
+    setReportSession(nextReportSession);
+    reportVersionRef.current = 0;
+    setReportVersion(0);
+    setGeneratedReport(null);
+    setReportErrorMessage(null);
+    syncAnalysisQueueState();
   };
 
   const stopRecording = useCallback(() => {
     recordingActiveRef.current = false;
+    closeReportSegment(Date.now());
     if (chunkTimerRef.current !== null) {
       window.clearTimeout(chunkTimerRef.current);
       chunkTimerRef.current = null;
     }
-    if (inferenceQueueTimerRef.current !== null) {
-      window.clearTimeout(inferenceQueueTimerRef.current);
-      inferenceQueueTimerRef.current = null;
-    }
-    inferenceQueueRef.current = [];
-    inferenceQueueRunningRef.current = false;
+    verificationEnabledRef.current = false;
+    verifyQueueRef.current = [];
+    verifyQueueRunningRef.current = false;
     if (verifyQueueTimerRef.current !== null) {
       window.clearTimeout(verifyQueueTimerRef.current);
       verifyQueueTimerRef.current = null;
     }
-    verifyQueueRef.current = [];
-    verifyQueueRunningRef.current = false;
     if (levelRafRef.current !== null) {
       cancelAnimationFrame(levelRafRef.current);
       levelRafRef.current = null;
@@ -597,14 +777,13 @@ export default function Home() {
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.stop();
     }
-    pendingChunksRef.current = [];
     mediaRecorderRef.current = null;
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     mediaStreamRef.current = null;
     setIsRecording(false);
-    setProcessingCount(0);
     setSessionId(null);
     finalizeLiveUtterance(Date.now());
+    syncAnalysisQueueState();
   }, []);
 
   const sendAssistant = useCallback(async () => {
@@ -628,9 +807,9 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
-          conversationContext: {
-            relationship,
-            situation: situationNote
+          contentContext: {
+            contentType,
+            analysisNote
           },
           latestUtterance,
           sessionContext,
@@ -663,12 +842,154 @@ export default function Home() {
   }, [
     assistantInput,
     assistantLoading,
-    relationship,
-    situationNote,
+    contentType,
+    analysisNote,
     latestInference,
     liveUtterance,
     latestVerification
   ]);
+
+  const generateReport = useCallback(async () => {
+    const currentReportSession = reportSessionRef.current;
+    if (!currentReportSession.firstStartAt || currentReportSession.transcripts.length === 0) {
+      setReportErrorMessage("Clear後の最初のStart以降の発話がまだありません");
+      return;
+    }
+    if (isRecording || hasBlockingAnalysis || isGeneratingReport) {
+      return;
+    }
+
+    setReportErrorMessage(null);
+    setIsGeneratingReport(true);
+    try {
+      const response = await fetchWithRetry("/api/report", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          reportSession: currentReportSession
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        const message =
+          typeof payload?.error === "string"
+          ? payload.error
+            : "要約・検証レポート生成に失敗しました";
+        setReportErrorMessage(message);
+        return;
+      }
+
+      const title =
+        typeof payload?.title === "string" && payload.title.trim()
+          ? payload.title.trim()
+          : "音声コンテンツ検証レポート";
+      if (typeof payload?.error === "string" && payload.error) {
+        setReportErrorMessage(payload.error);
+      }
+      setGeneratedReport({
+        title,
+        summaryOverview:
+          typeof payload?.summaryOverview === "string" && payload.summaryOverview.trim()
+            ? payload.summaryOverview.trim()
+            : typeof payload?.summary_overview === "string" &&
+                payload.summary_overview.trim()
+              ? payload.summary_overview.trim()
+              : "音声全体の要約を取得できませんでした。",
+        summaryTopics: Array.isArray(payload?.summaryTopics)
+          ? payload.summaryTopics.filter((item: unknown): item is string => typeof item === "string")
+          : Array.isArray(payload?.summary_topics)
+            ? payload.summary_topics.filter(
+                (item: unknown): item is string => typeof item === "string"
+              )
+            : [],
+        verificationOverview:
+          typeof payload?.verificationOverview === "string" &&
+          payload.verificationOverview.trim()
+            ? payload.verificationOverview.trim()
+            : typeof payload?.verification_overview === "string" &&
+                payload.verification_overview.trim()
+              ? payload.verification_overview.trim()
+              : "検証レポートを取得できませんでした。",
+        cautionPoints: Array.isArray(payload?.cautionPoints)
+          ? payload.cautionPoints
+          : Array.isArray(payload?.caution_points)
+            ? payload.caution_points
+            : [],
+        supportingPoints: Array.isArray(payload?.supportingPoints)
+          ? payload.supportingPoints
+          : Array.isArray(payload?.supporting_points)
+            ? payload.supporting_points
+            : [],
+        contradictingPoints: Array.isArray(payload?.contradictingPoints)
+          ? payload.contradictingPoints
+          : Array.isArray(payload?.contradicting_points)
+            ? payload.contradicting_points
+            : [],
+        openQuestions: Array.isArray(payload?.openQuestions)
+          ? payload.openQuestions.filter((item: unknown): item is string => typeof item === "string")
+          : Array.isArray(payload?.open_questions)
+            ? payload.open_questions.filter(
+                (item: unknown): item is string => typeof item === "string"
+              )
+            : [],
+        downloadMarkdown:
+          typeof payload?.downloadMarkdown === "string" && payload.downloadMarkdown.trim()
+            ? payload.downloadMarkdown.trim()
+            : typeof payload?.download_markdown === "string" &&
+                payload.download_markdown.trim()
+              ? payload.download_markdown.trim()
+              : `${title}\n\nレポート本文を取得できませんでした。`,
+        generatedAt: Date.now(),
+        sourceVersion: reportVersionRef.current
+      });
+    } catch (error) {
+      console.error(error);
+      setReportErrorMessage("レポート生成中にネットワークエラーが発生しました");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  }, [hasBlockingAnalysis, isGeneratingReport, isRecording]);
+
+  const downloadReport = useCallback(() => {
+    if (!generatedReport) return;
+    const filename = `audio-verification-report-${formatExportTimestamp(
+      reportSession.firstStartAt
+    )}.md`;
+    downloadTextFile(filename, generatedReport.downloadMarkdown, "text/markdown;charset=utf-8");
+  }, [generatedReport, reportSession.firstStartAt]);
+
+  const downloadLogs = useCallback(() => {
+    if (reportSession.transcripts.length === 0) return;
+    const joinedLogs = reportSession.transcripts.map((transcript) => ({
+      id: transcript.id,
+      timestamp: transcript.timestamp,
+      text: transcript.text,
+      inference:
+        reportSession.inferences.find((item) => item.id === transcript.id) ?? null,
+      verification:
+        reportSession.verifications.find((item) => item.id === transcript.id) ?? null
+    }));
+    const payload = {
+      exportedAt: Date.now(),
+      reportSession: {
+        id: reportSession.id,
+        clearAt: reportSession.clearAt,
+        firstStartAt: reportSession.firstStartAt,
+        lastStopAt: reportSession.lastStopAt,
+        segments: reportSession.segments
+      },
+      joinedLogs,
+      transcripts: reportSession.transcripts,
+      inferences: reportSession.inferences,
+      verifications: reportSession.verifications
+    };
+    const filename = `audio-analysis-log-${formatExportTimestamp(
+      reportSession.firstStartAt
+    )}.json`;
+    downloadTextFile(filename, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+  }, [reportSession]);
 
   const handleChunk = useCallback(
     async (blob: Blob, currentSessionId: string, chunkIndex: number) => {
@@ -837,16 +1158,16 @@ export default function Home() {
               currentUtterance: utterance,
               recentContext,
               sessionContext,
-              conversationContext: {
-                relationship: relationshipRef.current,
-                situation: situationNoteRef.current
+              contentContext: {
+                contentType: contentTypeRef.current,
+                analysisNote: analysisNoteRef.current
               },
               toneFeatures: toneMetricsSnapshot
             })
           });
 
           if (!inferResponse.ok) {
-            let message = "意図推定に失敗しました";
+            let message = "発話分析に失敗しました";
             try {
               const errorPayload = await inferResponse.json();
               if (typeof errorPayload?.error === "string") {
@@ -861,7 +1182,7 @@ export default function Home() {
 
           const inference = await inferResponse.json();
           if (typeof inference?.error === "string") {
-            setErrorMessage(`意図推定に失敗しました (${inference.error})`);
+            setErrorMessage(`発話分析に失敗しました (${inference.error})`);
           }
           const rawTemperature = inference.temperature;
           const temperatureValue: -2 | -1 | 0 | 1 | 2 =
@@ -899,7 +1220,7 @@ export default function Home() {
             createdAt,
             utterance: correctedUtterance,
             intent_label: inference.intent_label ?? "判断困難",
-            intent_note: inference.intent_note ?? "推定根拠が不足",
+            intent_note: inference.intent_note ?? "分析根拠が不足",
             temperature: temperatureValue,
             temperature_label: inference.temperature_label ?? "中立",
             confidence: confidenceValue
@@ -958,12 +1279,14 @@ export default function Home() {
           } else {
             queue.push(task);
           }
+          syncAnalysisQueueState();
           if (!inferenceQueueRunningRef.current) {
             const pump = async () => {
               if (inferenceQueueRunningRef.current) return;
               const nextTask = inferenceQueueRef.current.shift();
               if (!nextTask) return;
               inferenceQueueRunningRef.current = true;
+              syncAnalysisQueueState();
               await runInference(
                 nextTask.utterance,
                 nextTask.targetId,
@@ -974,6 +1297,7 @@ export default function Home() {
                 nextTask.sessionContext
               );
               inferenceQueueRunningRef.current = false;
+              syncAnalysisQueueState();
               if (inferenceQueueRef.current.length > 0) {
                 const upcoming = inferenceQueueRef.current[0];
                 const delay = computeQueueDelay(upcoming?.utterance ?? nextTask.utterance);
@@ -994,6 +1318,9 @@ export default function Home() {
           recentContext: string[],
           sessionContext: string[]
         ) => {
+          if (!verificationEnabledRef.current) {
+            return;
+          }
           const meta = verifyMetaRef.current[targetId];
           if (meta) {
             const sameText = meta.lastText === utterance;
@@ -1011,9 +1338,9 @@ export default function Home() {
               sessionId: currentSessionId,
               currentUtterance: utterance,
               sessionContext,
-              conversationContext: {
-                relationship: relationshipRef.current,
-                situation: situationNoteRef.current
+              contentContext: {
+                contentType: contentTypeRef.current,
+                analysisNote: analysisNoteRef.current
               }
             })
           });
@@ -1022,6 +1349,9 @@ export default function Home() {
             return;
           }
           const verifyPayload = await verifyResponse.json();
+          if (!verificationEnabledRef.current) {
+            return;
+          }
           if (!verifyPayload || verifyPayload.status === "out_of_scope") {
             return;
           }
@@ -1100,6 +1430,7 @@ export default function Home() {
           recentContext: string[],
           sessionContext: string[]
         ) => {
+          if (!verificationEnabledRef.current) return;
           if (utterance.trim().length < VERIFY_MIN_CHARS) return;
           const queue = verifyQueueRef.current;
           const task = { utterance, targetId, createdAt, recentContext, sessionContext };
@@ -1111,12 +1442,14 @@ export default function Home() {
           } else {
             queue.push(task);
           }
+          syncAnalysisQueueState();
           if (!verifyQueueRunningRef.current) {
             const pump = async () => {
               if (verifyQueueRunningRef.current) return;
               const nextTask = verifyQueueRef.current.shift();
               if (!nextTask) return;
               verifyQueueRunningRef.current = true;
+              syncAnalysisQueueState();
               await runVerify(
                 nextTask.utterance,
                 nextTask.targetId,
@@ -1125,6 +1458,7 @@ export default function Home() {
                 nextTask.sessionContext
               );
               verifyQueueRunningRef.current = false;
+              syncAnalysisQueueState();
               if (verifyQueueRef.current.length > 0) {
                 verifyQueueTimerRef.current = window.setTimeout(() => {
                   verifyQueueTimerRef.current = null;
@@ -1287,10 +1621,11 @@ export default function Home() {
   const startRecording = useCallback(async () => {
     if (isRecording) return;
     setErrorMessage(null);
+    setReportErrorMessage(null);
 
     try {
       if (!canStart) {
-        setErrorMessage("状況メモを入力してください");
+        setErrorMessage("分析メモを入力してください");
         return;
       }
       if (typeof MediaRecorder === "undefined") {
@@ -1301,6 +1636,9 @@ export default function Home() {
       setSessionId(session);
       chunkIndexRef.current = 0;
       emptyTranscriptCountRef.current = 0;
+      chunkBufferRef.current = [];
+      pendingChunksRef.current = [];
+      verificationEnabledRef.current = true;
 
       let stream: MediaStream;
       if (captureMode === "tab") {
@@ -1428,6 +1766,7 @@ export default function Home() {
 
       mediaRecorderRef.current = recorder;
       recordingActiveRef.current = true;
+      beginReportSegment(Date.now());
       recorder.start();
       chunkTimerRef.current = window.setTimeout(() => {
         if (recorder.state === "recording") {
@@ -1454,11 +1793,11 @@ export default function Home() {
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-            Analysis Subtitle
+            Audio Content Analyzer
           </p>
-          <h1 className="text-2xl font-semibold">空気の裏字幕</h1>
+          <h1 className="text-2xl font-semibold">音声コンテンツ分析</h1>
           <p className="mt-1 text-sm text-slate-500">
-            発話から読み取れる可能性を静かに可視化します。
+            YouTube、会議、セミナー、講習の内容整理と検証を支援します。
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -1473,7 +1812,7 @@ export default function Home() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className={`text-sm font-semibold ${latestTone.text}`}>
-              直前の評価
+              直前の分析
             </span>
             {liveUtterance && (
               <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs text-slate-500">
@@ -1484,30 +1823,30 @@ export default function Home() {
           <div className="text-xs text-slate-500">
             {latestInference
               ? `確信度 ${Math.round(latestInference.confidence * 100)}%`
-              : "推定待機中"}
+              : "分析待機中"}
           </div>
         </div>
         <div className="mt-3 grid gap-4 md:grid-cols-[1.6fr_0.8fr]">
           <div className="flex flex-col gap-3">
             <span className="text-[22px] font-semibold leading-snug text-slate-900">
-              {latestInference?.intent_note ?? "推定待機中"}
+              {latestInference?.intent_note ?? "分析待機中"}
             </span>
             <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
               <span className={`font-semibold ${latestTone.text}`}>
                 {latestInference?.intent_label ?? "判断困難"}
               </span>
-              <span>温度感: {latestInference?.temperature_label ?? "中立"}</span>
+              <span>伝え方: {latestInference?.temperature_label ?? "中立"}</span>
               <span>
                 {latestInference
                   ? `確信度 ${Math.round(latestInference.confidence * 100)}%`
-                  : "推定待機中"}
+                  : "分析待機中"}
               </span>
             </div>
           </div>
           <div className="rounded-xl border border-white/60 bg-white/70 px-3 py-2 text-xs text-slate-500">
-            <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
-              直前の推論対象
-            </div>
+              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+              直前の分析対象
+              </div>
             <div className="mt-1 text-sm text-slate-700">
               {latestText || "発話を待機中です。"}
             </div>
@@ -1618,24 +1957,28 @@ export default function Home() {
         <CaptureControls
           captureMode={captureMode}
           setCaptureMode={setCaptureMode}
-          relationship={relationship}
-          setRelationship={setRelationship}
-          situationNote={situationNote}
-          setSituationNote={setSituationNote}
+          contentType={contentType}
+          setContentType={setContentType}
+          analysisNote={analysisNote}
+          setAnalysisNote={setAnalysisNote}
           inputLanguage={inputLanguage}
           setInputLanguage={setInputLanguage}
           canStart={canStart}
+          canClear={canClear}
+          canGenerateReport={canGenerateReport}
           isRecording={isRecording}
           isProcessing={isProcessing}
+          isGeneratingReport={isGeneratingReport}
           onStart={startRecording}
           onStop={stopRecording}
           onClear={clearSession}
+          onGenerateReport={generateReport}
         />
         <section className="panel flex flex-col gap-4 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="panel-title">検証質問ボット</h2>
+            <h2 className="panel-title">分析アシスタント</h2>
             <span className="text-xs text-slate-400">
-              検証アシストのトピックを元に相談できます
+              要約や検証トピックを元に追加質問できます
             </span>
           </div>
           {assistantHints.length > 0 && (
@@ -1655,7 +1998,7 @@ export default function Home() {
           <div className="max-h-56 space-y-2 overflow-y-auto rounded-xl border border-slate-200/70 bg-white/70 p-3 text-sm text-slate-700">
             {assistantMessages.length === 0 && (
               <p className="text-xs text-slate-400">
-                ここに質問を入力すると、状況メモと検証トピックを踏まえて回答します。
+                ここに質問を入力すると、分析メモと検証トピックを踏まえて回答します。
               </p>
             )}
             {assistantMessages.map((message) => (
@@ -1700,6 +2043,25 @@ export default function Home() {
         </section>
       </section>
 
+      <AudioSummaryWidget
+        reportSession={reportSession}
+        generatedReport={generatedReport}
+        isGenerating={isGeneratingReport}
+        canGenerate={canGenerateReport}
+        hasBlockingAnalysis={hasBlockingAnalysis}
+        isStale={isReportStale}
+        errorMessage={reportErrorMessage}
+        onGenerate={generateReport}
+      />
+
+      <ReportPanel
+        generatedReport={generatedReport}
+        canDownloadLogs={reportSession.transcripts.length > 0}
+        hasPendingVerification={hasPendingVerification}
+        onDownloadReport={downloadReport}
+        onDownloadLogs={downloadLogs}
+      />
+
       <section className="grid gap-4 lg:grid-cols-[1.2fr_1.2fr_0.8fr]">
         <TranscriptPanel items={transcriptItems} liveText={liveUtterance} />
         <IntentPanel items={inferenceItems} />
@@ -1709,7 +2071,7 @@ export default function Home() {
       <footer className="flex flex-col gap-2 text-xs text-slate-500">
         <span>
           {isRecording
-            ? "録音中。2秒ごとに文字起こしと推定を更新します。"
+            ? "録音中。2秒ごとに文字起こしと分析を更新します。"
             : "Start で音声取得を開始してください。"}
         </span>
         <span>

@@ -169,17 +169,17 @@ export async function POST(request: Request) {
     const sessionContext = Array.isArray(body?.sessionContext)
       ? body.sessionContext.filter((item: unknown) => typeof item === "string")
       : [];
-    const conversationContext =
-      body?.conversationContext && typeof body.conversationContext === "object"
-        ? body.conversationContext
+    const contentContext =
+      body?.contentContext && typeof body.contentContext === "object"
+        ? body.contentContext
         : {};
-    const relationship =
-      typeof conversationContext?.relationship === "string"
-        ? conversationContext.relationship
-        : "不明";
-    const situation =
-      typeof conversationContext?.situation === "string"
-        ? conversationContext.situation
+    const contentType =
+      typeof contentContext?.contentType === "string"
+        ? contentContext.contentType
+        : "YouTube動画";
+    const analysisNote =
+      typeof contentContext?.analysisNote === "string"
+        ? contentContext.analysisNote
         : "";
 
     const messages = [
@@ -189,7 +189,10 @@ export async function POST(request: Request) {
         content: VERIFY_USER_TEMPLATE({
           current_utterance: currentUtterance,
           session_context: sessionContext,
-          conversation_context: { relationship, situation }
+          content_context: {
+            content_type: contentType,
+            analysis_note: analysisNote
+          }
         })
       }
     ];
