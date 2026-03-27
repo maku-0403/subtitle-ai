@@ -322,6 +322,90 @@ function createEmptyReportSession(): ReportSessionData {
   };
 }
 
+function computeContentTrust(verifications: VerificationResult[]) {
+  if (verifications.length === 0) {
+    return {
+      score: null as number | null,
+      label: "未判定",
+      summary: "検証結果がまだ少ないため、信頼度は判定前です。"
+    };
+  }
+
+  const recentItems = verifications.slice(-20);
+  let weightedTotal = 0;
+  let totalWeight = 0;
+  let supportedCount = 0;
+  let contradictedCount = 0;
+  let cautionCount = 0;
+
+  for (const item of recentItems) {
+    let itemScore = 50;
+    if (item.status === "likely_ok") itemScore += 10;
+    if (item.status === "needs_research") itemScore -= 12;
+    if (item.status === "uncertain") itemScore -= 6;
+
+    if (item.external_check.verdict === "supported") {
+      itemScore += 22;
+      supportedCount += 1;
+    }
+    if (item.external_check.verdict === "contradicted") {
+      itemScore -= 28;
+      contradictedCount += 1;
+    }
+    if (item.external_check.verdict === "mixed") {
+      itemScore -= 12;
+      cautionCount += 1;
+    }
+    if (item.external_check.verdict === "insufficient") {
+      itemScore -= 8;
+      cautionCount += 1;
+    }
+
+    if (item.status === "needs_research") {
+      cautionCount += 1;
+    }
+
+    const verificationWeight = 0.45 + Math.max(0, Math.min(0.55, item.confidence * 0.35));
+    const externalWeight = item.external_check.enabled
+      ? 0.55 + Math.max(0, Math.min(0.45, item.external_check.confidence * 0.35))
+      : 0.35;
+    const weight = verificationWeight + externalWeight;
+
+    weightedTotal += Math.max(0, Math.min(100, itemScore)) * weight;
+    totalWeight += weight;
+  }
+
+  const score =
+    totalWeight > 0 ? Math.max(0, Math.min(100, weightedTotal / totalWeight)) : 50;
+
+  if (score >= 75) {
+    return {
+      score,
+      label: "高め",
+      summary: `支持材料が比較的多く、現時点では大きな矛盾は少なめです。支持 ${supportedCount} 件、要注意 ${cautionCount} 件です。`
+    };
+  }
+  if (score >= 55) {
+    return {
+      score,
+      label: "やや高め",
+      summary: `現時点では大きな否定材料は限定的ですが、追加確認の余地があります。支持 ${supportedCount} 件、要注意 ${cautionCount} 件です。`
+    };
+  }
+  if (score >= 35) {
+    return {
+      score,
+      label: "要確認",
+      summary: `支持と懸念が混在しています。鵜呑みにはせず、根拠の強いソースを追加確認してください。反証 ${contradictedCount} 件、要注意 ${cautionCount} 件です。`
+    };
+  }
+  return {
+    score,
+    label: "低め",
+    summary: `矛盾や検証不足が目立ちます。内容をそのまま信頼せず、出典と主張を個別に確認してください。反証 ${contradictedCount} 件、要注意 ${cautionCount} 件です。`
+  };
+}
+
 function formatExportTimestamp(timestamp: number | null) {
   const date = new Date(timestamp ?? Date.now());
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -973,6 +1057,7 @@ export default function Home() {
     }));
     const payload = {
       exportedAt: Date.now(),
+      contentTrustEstimate: computeContentTrust(reportSession.verifications),
       reportSession: {
         id: reportSession.id,
         clearAt: reportSession.clearAt,
@@ -1820,11 +1905,6 @@ export default function Home() {
               </span>
             )}
           </div>
-          <div className="text-xs text-slate-500">
-            {latestInference
-              ? `確信度 ${Math.round(latestInference.confidence * 100)}%`
-              : "分析待機中"}
-          </div>
         </div>
         <div className="mt-3 grid gap-4 md:grid-cols-[1.6fr_0.8fr]">
           <div className="flex flex-col gap-3">
@@ -1836,11 +1916,6 @@ export default function Home() {
                 {latestInference?.intent_label ?? "判断困難"}
               </span>
               <span>伝え方: {latestInference?.temperature_label ?? "中立"}</span>
-              <span>
-                {latestInference
-                  ? `確信度 ${Math.round(latestInference.confidence * 100)}%`
-                  : "分析待機中"}
-              </span>
             </div>
           </div>
           <div className="rounded-xl border border-white/60 bg-white/70 px-3 py-2 text-xs text-slate-500">

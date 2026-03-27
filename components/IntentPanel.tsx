@@ -30,9 +30,6 @@ export default function IntentPanel({ items }: IntentPanelProps) {
                 <span className="text-sm font-semibold text-slate-800">
                   {item.intent_label}
                 </span>
-                <span className="text-xs text-slate-400">
-                  確信度 {Math.round(item.confidence * 100)}%
-                </span>
               </div>
               <p className="mt-2 text-sm text-slate-700">{item.intent_note}</p>
               <p className="mt-2 text-xs text-slate-400">{item.utterance}</p>
