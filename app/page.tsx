@@ -1,14 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import AnalysisAssistantPanel from "@/components/AnalysisAssistantPanel";
 import AudioSummaryWidget from "@/components/AudioSummaryWidget";
 import CaptureControls from "@/components/CaptureControls";
 import ReportPanel from "@/components/ReportPanel";
 import TranscriptPanel from "@/components/TranscriptPanel";
 import IntentPanel from "@/components/IntentPanel";
-import TemperatureMeter from "@/components/TemperatureMeter";
 import { pickSupportedMimeType } from "@/lib/audio";
+import {
+  buildPopupFeatures,
+  POPUP_CHANNEL_NAME,
+  POPUP_PANEL_META,
+  POPUP_PANEL_ORDER,
+  POPUP_STATE_STORAGE_KEY
+} from "@/lib/popup";
 import type { InferenceItem, TranscriptItem } from "@/types/inference";
+import type { AssistantMessage, PopupChannelMessage, PopupPanelId, PopupStateSnapshot } from "@/types/popup";
 import type { GeneratedReport, ReportSegment, ReportSessionData } from "@/types/report";
 import type {
   EvidenceVerdict,
@@ -135,6 +143,14 @@ const EXTERNAL_VERDICT_META: Record<
     bg: "bg-slate-50"
   }
 };
+
+type CollapsibleWidgetId =
+  | "settings"
+  | "assistant"
+  | "summary"
+  | "report"
+  | "transcript"
+  | "intent";
 
 function mergeUtterance(prev: string, next: string): string {
   const a = prev.trim();
@@ -447,9 +463,7 @@ export default function Home() {
   );
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantLoading, setAssistantLoading] = useState(false);
-  const [assistantMessages, setAssistantMessages] = useState<
-    Array<{ id: string; role: "user" | "assistant"; content: string }>
-  >([]);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
   const [toneSummary, setToneSummary] = useState({
     energy: "low",
     pace: "slow",
@@ -466,6 +480,19 @@ export default function Home() {
     null
   );
   const [reportVersion, setReportVersion] = useState(0);
+  const [isPopupMenuOpen, setIsPopupMenuOpen] = useState(false);
+  const [isVerificationAssistCollapsed, setIsVerificationAssistCollapsed] =
+    useState(true);
+  const [collapsedWidgets, setCollapsedWidgets] = useState<
+    Record<CollapsibleWidgetId, boolean>
+  >({
+    settings: true,
+    assistant: true,
+    summary: true,
+    report: true,
+    transcript: true,
+    intent: true
+  });
   const [analysisQueueState, setAnalysisQueueState] = useState({
     inferencePending: 0,
     verifyPending: 0,
@@ -540,11 +567,16 @@ export default function Home() {
   const verifyMetaRef = useRef<
     Record<string, { lastAt: number; lastText: string; lastSig: string }>
   >({});
+  const popupChannelRef = useRef<BroadcastChannel | null>(null);
+  const popupSnapshotRef = useRef<PopupStateSnapshot | null>(null);
+  const sendAssistantRef = useRef<
+    (questionOverride?: string) => Promise<void>
+  >(async () => undefined);
+  const reportWidgetsRef = useRef<HTMLDivElement | null>(null);
 
   const isProcessing = processingCount > 0;
   const latestInference = inferenceItems[inferenceItems.length - 1];
   const latestVerification = verificationItems[verificationItems.length - 1];
-  const temperature = latestInference?.temperature ?? 0;
   const latestTranscript = transcriptItems[transcriptItems.length - 1];
   const latestText =
     latestInference?.utterance ||
@@ -579,6 +611,7 @@ export default function Home() {
   const canClear = !isRecording && !hasBlockingAnalysis && !isGeneratingReport;
   const isReportStale =
     generatedReport !== null && generatedReport.sourceVersion !== reportVersion;
+  const hasStartedSession = reportSession.firstStartAt !== null;
 
   const syncAnalysisQueueState = () => {
     setAnalysisQueueState({
@@ -831,6 +864,15 @@ export default function Home() {
     setReportVersion(0);
     setGeneratedReport(null);
     setReportErrorMessage(null);
+    setIsVerificationAssistCollapsed(true);
+    setCollapsedWidgets({
+      settings: true,
+      assistant: true,
+      summary: true,
+      report: true,
+      transcript: true,
+      intent: true
+    });
     syncAnalysisQueueState();
   };
 
@@ -870,15 +912,17 @@ export default function Home() {
     syncAnalysisQueueState();
   }, []);
 
-  const sendAssistant = useCallback(async () => {
-    const question = assistantInput.trim();
+  const sendAssistant = useCallback(async (questionOverride?: string) => {
+    const question = (questionOverride ?? assistantInput).trim();
     if (!question || assistantLoading) return;
     const id = crypto.randomUUID();
     setAssistantMessages((prev) => [
       ...prev,
       { id, role: "user", content: question }
     ]);
-    setAssistantInput("");
+    if (questionOverride === undefined) {
+      setAssistantInput("");
+    }
     setAssistantLoading(true);
     try {
       const sessionContext = transcriptRef.current
@@ -933,7 +977,27 @@ export default function Home() {
     latestVerification
   ]);
 
+  useEffect(() => {
+    sendAssistantRef.current = sendAssistant;
+  }, [sendAssistant]);
+
   const generateReport = useCallback(async () => {
+    setCollapsedWidgets((prev) => ({
+      ...prev,
+      summary: false,
+      report: false
+    }));
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          reportWidgetsRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+          });
+        });
+      });
+    }
+
     const currentReportSession = reportSessionRef.current;
     if (!currentReportSession.firstStartAt || currentReportSession.transcripts.length === 0) {
       setReportErrorMessage("Clear後の最初のStart以降の発話がまだありません");
@@ -968,7 +1032,7 @@ export default function Home() {
       const title =
         typeof payload?.title === "string" && payload.title.trim()
           ? payload.title.trim()
-          : "音声コンテンツ検証レポート";
+          : "空気の裏字幕 検証レポート";
       if (typeof payload?.error === "string" && payload.error) {
         setReportErrorMessage(payload.error);
       }
@@ -1873,162 +1937,163 @@ export default function Home() {
       : "Recording"
     : "Idle";
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const snapshot: PopupStateSnapshot = {
+      updatedAt: Date.now(),
+      status,
+      contentType,
+      analysisNote,
+      transcriptItems,
+      liveUtterance,
+      inferenceItems,
+      latestVerification,
+      assistantMessages,
+      assistantLoading
+    };
+
+    popupSnapshotRef.current = snapshot;
+
+    try {
+      window.localStorage.setItem(POPUP_STATE_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch (error) {
+      console.error(error);
+    }
+
+    popupChannelRef.current?.postMessage({
+      type: "snapshot",
+      snapshot
+    } satisfies PopupChannelMessage);
+  }, [
+    status,
+    contentType,
+    analysisNote,
+    transcriptItems,
+    liveUtterance,
+    inferenceItems,
+    latestVerification,
+    assistantMessages,
+    assistantLoading
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") {
+      return;
+    }
+
+    const channel = new BroadcastChannel(POPUP_CHANNEL_NAME);
+    popupChannelRef.current = channel;
+
+    channel.onmessage = (event: MessageEvent<PopupChannelMessage>) => {
+      if (event.data?.type === "request_snapshot") {
+        if (!popupSnapshotRef.current) return;
+        channel.postMessage({
+          type: "snapshot",
+          snapshot: popupSnapshotRef.current
+        } satisfies PopupChannelMessage);
+      }
+
+      if (event.data?.type === "assistant_request") {
+        void sendAssistantRef.current(event.data.question);
+      }
+    };
+
+    return () => {
+      channel.close();
+      if (popupChannelRef.current === channel) {
+        popupChannelRef.current = null;
+      }
+    };
+  }, []);
+
+  const openPopupWindow = (panelId: PopupPanelId) => {
+    window.open(
+      `/popup/${panelId}`,
+      `audio-content-${panelId}`,
+      buildPopupFeatures(panelId)
+    );
+  };
+
+  const toggleCollapsedWidget = (widgetId: CollapsibleWidgetId) => {
+    setCollapsedWidgets((prev) => ({
+      ...prev,
+      [widgetId]: !prev[widgetId]
+    }));
+  };
+
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-4 py-10">
       <header className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-            Audio Content Analyzer
+          <p className="text-xs font-semibold uppercase tracking-[0.42em] text-slate-700">
+            IMPACT IN FACT
           </p>
-          <h1 className="text-2xl font-semibold">音声コンテンツ分析</h1>
+          <h1 className="text-2xl font-semibold">空気の裏字幕</h1>
           <p className="mt-1 text-sm text-slate-500">
-            YouTube、会議、セミナー、講習の内容整理と検証を支援します。
+            音声コンテンツの内容整理と検証を支援します。
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="pill">Status: {status}</span>
-          <span className="pill">Session: {sessionId ? "Active" : "Idle"}</span>
+        <div className="flex flex-col items-end gap-3">
+          <div className="relative">
+            <button
+              className="flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-800"
+              onClick={() => setIsPopupMenuOpen((prev) => !prev)}
+              type="button"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                className="h-5 w-5"
+              >
+                <rect x="5" y="7" width="11" height="11" rx="2" />
+                <path
+                  d="M13 5h6v6M19 5l-7 7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+            {isPopupMenuOpen ? (
+              <div className="absolute right-0 top-14 z-40 w-[320px] rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-xl backdrop-blur">
+                <div className="absolute -top-2 right-5 h-4 w-4 rotate-45 border-l border-t border-slate-200/80 bg-white/95" />
+                <div className="relative">
+                  <div className="text-sm font-semibold text-slate-900">分離表示</div>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    字幕、発話分析、検証アシスタント、分析アシスタントを別ウィンドウで開けます。
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {POPUP_PANEL_ORDER.map((panelId) => (
+                      <button
+                        key={panelId}
+                        className="rounded-full border border-slate-300 bg-white/80 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                        onClick={() => {
+                          openPopupWindow(panelId);
+                          setIsPopupMenuOpen(false);
+                        }}
+                        type="button"
+                      >
+                        {POPUP_PANEL_META[panelId].label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-xs text-slate-500">
+                    ブラウザのポップアップ許可が必要です。
+                  </p>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="pill">Status: {status}</span>
+            <span className="pill">Session: {sessionId ? "Active" : "Idle"}</span>
+          </div>
         </div>
       </header>
 
-      <section
-        className={`panel border-l-4 ${latestTone.bg} ${latestTone.border} p-4`}
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className={`text-sm font-semibold ${latestTone.text}`}>
-              直前の分析
-            </span>
-            {liveUtterance && (
-              <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs text-slate-500">
-                暫定
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-[1.6fr_0.8fr]">
-          <div className="flex flex-col gap-3">
-            <span className="text-[22px] font-semibold leading-snug text-slate-900">
-              {latestInference?.intent_note ?? "分析待機中"}
-            </span>
-            <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
-              <span className={`font-semibold ${latestTone.text}`}>
-                {latestInference?.intent_label ?? "判断困難"}
-              </span>
-              <span>伝え方: {latestInference?.temperature_label ?? "中立"}</span>
-            </div>
-          </div>
-          <div className="rounded-xl border border-white/60 bg-white/70 px-3 py-2 text-xs text-slate-500">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
-              直前の分析対象
-              </div>
-            <div className="mt-1 text-sm text-slate-700">
-              {latestText || "発話を待機中です。"}
-            </div>
-          </div>
-        </div>
-        <div className="mt-4 min-w-0 rounded-xl border border-slate-200/70 bg-white/80 px-3 py-3">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <span className="min-w-0 flex-1 text-xs tracking-[0.2em] text-slate-400 leading-relaxed whitespace-normal break-words">
-              検証アシスト
-            </span>
-            <div className="flex flex-wrap gap-2">
-              <span
-                className={`rounded-full border px-3 py-1 text-xs font-semibold ${verificationMeta.border} ${verificationMeta.bg} ${verificationMeta.color}`}
-              >
-                {verificationMeta.label}
-              </span>
-              <span
-                className={`rounded-full border px-3 py-1 text-xs font-semibold ${externalCheckMeta.border} ${externalCheckMeta.bg} ${externalCheckMeta.color}`}
-              >
-                外部照合: {externalCheckMeta.label}
-              </span>
-            </div>
-          </div>
-          <div className="mt-2 text-sm text-slate-700">
-            <span className="break-all leading-relaxed">
-              {latestVerification?.summary ?? "検証待機中です。"}
-            </span>
-          </div>
-          {latestVerification?.public_topics?.length ? (
-            <div className="mt-2 space-y-1 text-xs text-slate-600">
-              {latestVerification.public_topics.slice(0, 3).map((topic, index) => (
-                <div key={`${topic.topic}-${index}`} className="break-all leading-relaxed">
-                  ・{topic.topic}（{topic.reason}）
-                </div>
-              ))}
-            </div>
-          ) : null}
-          {latestVerification?.suggested_queries?.length ? (
-            <div className="mt-2 text-xs text-slate-500 break-all leading-relaxed">
-              調べるワード:{" "}
-              {latestVerification.suggested_queries.slice(0, 4).join(" / ")}
-            </div>
-          ) : null}
-          {latestExternalCheck?.summary ? (
-            <div className="mt-3 rounded-lg border border-slate-200/70 bg-slate-50/80 px-3 py-2 text-xs text-slate-600">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
-                外部照合サマリー
-              </div>
-              <div className="mt-1 break-all leading-relaxed">
-                {latestExternalCheck.summary}
-              </div>
-            </div>
-          ) : null}
-          {latestExternalCheck?.claim_checks?.length ? (
-            <div className="mt-3 space-y-2 text-xs text-slate-600">
-              {latestExternalCheck.claim_checks.slice(0, 3).map((check, index) => {
-                const meta = EXTERNAL_VERDICT_META[check.verdict];
-                return (
-                  <div
-                    key={`${check.claim}-${index}`}
-                    className="rounded-lg border border-slate-200/70 bg-white/70 px-3 py-2"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1 break-all font-medium text-slate-700">
-                        {check.claim}
-                      </div>
-                      <span
-                        className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${meta.border} ${meta.bg} ${meta.color}`}
-                      >
-                        {meta.label}
-                      </span>
-                    </div>
-                    <div className="mt-1 break-all leading-relaxed">{check.reason}</div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-          {latestExternalCheck?.sources?.length ? (
-            <div className="mt-3 space-y-2 text-xs text-slate-600">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
-                参照ソース
-              </div>
-              {latestExternalCheck.sources.slice(0, 3).map((source) => (
-                <a
-                  key={`${source.url}-${source.query}`}
-                  href={source.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block rounded-lg border border-slate-200/70 bg-white/80 px-3 py-2 hover:border-slate-300"
-                >
-                  <div className="break-all font-medium text-slate-700">{source.title}</div>
-                  <div className="mt-1 text-[11px] text-slate-400">
-                    {source.domain || source.query}
-                    {source.published_date ? ` / ${source.published_date}` : ""}
-                  </div>
-                  <div className="mt-1 break-all leading-relaxed text-slate-500">
-                    {source.snippet}
-                  </div>
-                </a>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+      {!hasStartedSession ? (
         <CaptureControls
           captureMode={captureMode}
           setCaptureMode={setCaptureMode}
@@ -2049,118 +2114,321 @@ export default function Home() {
           onClear={clearSession}
           onGenerateReport={generateReport}
         />
-        <section className="panel flex flex-col gap-4 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="panel-title">分析アシスタント</h2>
-            <span className="text-xs text-slate-400">
-              要約や検証トピックを元に追加質問できます
-            </span>
-          </div>
-          {assistantHints.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {assistantHints.slice(0, 6).map((hint) => (
-                <button
-                  key={hint}
-                  className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs text-slate-600 hover:border-slate-300"
-                  onClick={() => setAssistantInput(hint)}
-                  type="button"
-                >
-                  {hint}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="max-h-56 space-y-2 overflow-y-auto rounded-xl border border-slate-200/70 bg-white/70 p-3 text-sm text-slate-700">
-            {assistantMessages.length === 0 && (
-              <p className="text-xs text-slate-400">
-                ここに質問を入力すると、分析メモと検証トピックを踏まえて回答します。
-              </p>
-            )}
-            {assistantMessages.map((message) => (
-              <div
-                key={message.id}
-                className={`rounded-lg px-3 py-2 ${
-                  message.role === "assistant"
-                    ? "bg-slate-100 text-slate-700"
-                    : "bg-emerald-50 text-emerald-700"
-                }`}
-              >
-                <div className="text-xs uppercase tracking-[0.2em] text-slate-400">
-                  {message.role === "assistant" ? "Assistant" : "You"}
-                </div>
-                <div className="mt-1 whitespace-pre-wrap break-words">
-                  {message.content}
+      ) : null}
+
+      {hasStartedSession ? (
+        <>
+          <div className="space-y-3">
+            <section
+              className={`panel border-l-4 ${latestTone.bg} ${latestTone.border} p-4`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-semibold ${latestTone.text}`}>
+                    直前の分析
+                  </span>
+                  {liveUtterance && (
+                    <span className="rounded-full bg-white/80 px-2 py-0.5 text-xs text-slate-500">
+                      暫定
+                    </span>
+                  )}
                 </div>
               </div>
-            ))}
+              <div className="mt-3 grid gap-4 md:grid-cols-[1.6fr_0.8fr]">
+                <div className="flex flex-col gap-3">
+                  <span className="text-[22px] font-semibold leading-snug text-slate-900">
+                    {latestInference?.intent_note ?? "分析待機中"}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                    <span className={`text-base font-semibold ${latestTone.text}`}>
+                      {latestInference?.intent_label ?? "判断困難"}
+                    </span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-white/60 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                    直前の分析対象
+                  </div>
+                  <div className="mt-1 text-sm text-slate-700">
+                    {latestText || "発話を待機中です。"}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 min-w-0 rounded-xl border border-slate-200/70 bg-white/80 px-3 py-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <span className="min-w-0 flex-1 text-xs tracking-[0.2em] text-slate-400 leading-relaxed whitespace-normal break-words">
+                    検証アシスト
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${verificationMeta.border} ${verificationMeta.bg} ${verificationMeta.color}`}
+                    >
+                      {verificationMeta.label}
+                    </span>
+                    <span
+                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${externalCheckMeta.border} ${externalCheckMeta.bg} ${externalCheckMeta.color}`}
+                    >
+                      外部照合: {externalCheckMeta.label}
+                    </span>
+                    <button
+                      aria-label={
+                        isVerificationAssistCollapsed
+                          ? "検証アシストを展開"
+                          : "検証アシストを折りたたむ"
+                      }
+                      className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+                      onClick={() =>
+                        setIsVerificationAssistCollapsed((prev) => !prev)
+                      }
+                      type="button"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        className="h-4 w-4"
+                      >
+                        {isVerificationAssistCollapsed ? (
+                          <path d="M6 10l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                        ) : (
+                          <path d="M6 14l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+                        )}
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 text-sm text-slate-700">
+                  <span className="break-all leading-relaxed">
+                    {latestVerification?.summary ?? "検証待機中です。"}
+                  </span>
+                </div>
+                {!isVerificationAssistCollapsed ? (
+                  <>
+                    {latestVerification?.public_topics?.length ? (
+                      <div className="mt-2 space-y-1 text-xs text-slate-600">
+                        {latestVerification.public_topics
+                          .slice(0, 3)
+                          .map((topic, index) => (
+                            <div
+                              key={`${topic.topic}-${index}`}
+                              className="break-all leading-relaxed"
+                            >
+                              ・{topic.topic}（{topic.reason}）
+                            </div>
+                          ))}
+                      </div>
+                    ) : null}
+                    {latestVerification?.suggested_queries?.length ? (
+                      <div className="mt-2 text-xs text-slate-500 break-all leading-relaxed">
+                        調べるワード:{" "}
+                        {latestVerification.suggested_queries.slice(0, 4).join(" / ")}
+                      </div>
+                    ) : null}
+                    {latestExternalCheck?.summary ? (
+                      <div className="mt-3 rounded-lg border border-slate-200/70 bg-slate-50/80 px-3 py-2 text-xs text-slate-600">
+                        <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                          外部照合サマリー
+                        </div>
+                        <div className="mt-1 break-all leading-relaxed">
+                          {latestExternalCheck.summary}
+                        </div>
+                      </div>
+                    ) : null}
+                    {latestExternalCheck?.claim_checks?.length ? (
+                      <div className="mt-3 space-y-2 text-xs text-slate-600">
+                        {latestExternalCheck.claim_checks
+                          .slice(0, 3)
+                          .map((check, index) => {
+                            const meta = EXTERNAL_VERDICT_META[check.verdict];
+                            return (
+                              <div
+                                key={`${check.claim}-${index}`}
+                                className="rounded-lg border border-slate-200/70 bg-white/70 px-3 py-2"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1 break-all font-medium text-slate-700">
+                                    {check.claim}
+                                  </div>
+                                  <span
+                                    className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${meta.border} ${meta.bg} ${meta.color}`}
+                                  >
+                                    {meta.label}
+                                  </span>
+                                </div>
+                                <div className="mt-1 break-all leading-relaxed">
+                                  {check.reason}
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    ) : null}
+                    {latestExternalCheck?.sources?.length ? (
+                      <div className="mt-3 space-y-2 text-xs text-slate-600">
+                        <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                          参照ソース
+                        </div>
+                        {latestExternalCheck.sources.slice(0, 3).map((source) => (
+                          <a
+                            key={`${source.url}-${source.query}`}
+                            href={source.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block rounded-lg border border-slate-200/70 bg-white/80 px-3 py-2 hover:border-slate-300"
+                          >
+                            <div className="break-all font-medium text-slate-700">
+                              {source.title}
+                            </div>
+                            <div className="mt-1 text-[11px] text-slate-400">
+                              {source.domain || source.query}
+                              {source.published_date ? ` / ${source.published_date}` : ""}
+                            </div>
+                            <div className="mt-1 break-all leading-relaxed text-slate-500">
+                              {source.snippet}
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </section>
+            <div className="flex flex-wrap items-center gap-2 px-1">
+              <button
+                className="rounded-full bg-accent px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={startRecording}
+                disabled={isRecording || !canStart}
+                type="button"
+              >
+                Start
+              </button>
+              <button
+                className="rounded-full border border-slate-300 bg-white/90 px-5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={stopRecording}
+                disabled={!isRecording}
+                type="button"
+              >
+                Stop
+              </button>
+              <button
+                className="rounded-full border border-slate-300 bg-white/90 px-5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                onClick={clearSession}
+                disabled={!canClear}
+                type="button"
+              >
+                Clear
+              </button>
+              <button
+                className="rounded-full border border-slate-300 bg-white/90 px-5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={generateReport}
+                disabled={!canGenerateReport || isGeneratingReport}
+                type="button"
+              >
+                {isGeneratingReport ? "レポート生成中" : "レポート生成"}
+              </button>
+              <span className="text-xs text-slate-500">
+                {isProcessing ? "処理中" : isRecording ? "録音中" : "待機中"}
+              </span>
+            </div>
           </div>
-          <div className="flex flex-col gap-2 md:flex-row md:items-center">
-            <input
-              className="flex-1 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-slate-700"
-              placeholder="例: Claude Codeのエージェントの要点は？"
-              value={assistantInput}
-              onChange={(event) => setAssistantInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  sendAssistant();
-                }
-              }}
-            />
-            <button
-              className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              onClick={sendAssistant}
-              disabled={assistantLoading || assistantInput.trim().length === 0}
-            >
-              {assistantLoading ? "送信中" : "送信"}
-            </button>
-          </div>
-        </section>
-      </section>
 
-      <AudioSummaryWidget
-        reportSession={reportSession}
-        generatedReport={generatedReport}
-        isGenerating={isGeneratingReport}
-        canGenerate={canGenerateReport}
-        hasBlockingAnalysis={hasBlockingAnalysis}
-        isStale={isReportStale}
-        errorMessage={reportErrorMessage}
-        onGenerate={generateReport}
-      />
+          <section className="space-y-4">
+            <div className="grid items-start gap-4 lg:grid-cols-[1fr_1.2fr]">
+              <div className="self-start">
+                <CaptureControls
+                  captureMode={captureMode}
+                  setCaptureMode={setCaptureMode}
+                  contentType={contentType}
+                  setContentType={setContentType}
+                  analysisNote={analysisNote}
+                  setAnalysisNote={setAnalysisNote}
+                  inputLanguage={inputLanguage}
+                  setInputLanguage={setInputLanguage}
+                  canStart={canStart}
+                  canClear={canClear}
+                  canGenerateReport={canGenerateReport}
+                  isRecording={isRecording}
+                  isProcessing={isProcessing}
+                  isGeneratingReport={isGeneratingReport}
+                  compactMode
+                  collapsed={collapsedWidgets.settings}
+                  onStart={startRecording}
+                  onStop={stopRecording}
+                  onClear={clearSession}
+                  onGenerateReport={generateReport}
+                  onToggleCollapsed={() => toggleCollapsedWidget("settings")}
+                />
+              </div>
+              <div className="self-start">
+                <AnalysisAssistantPanel
+                  assistantHints={assistantHints}
+                  assistantInput={assistantInput}
+                  assistantLoading={assistantLoading}
+                  assistantMessages={assistantMessages}
+                  collapsed={collapsedWidgets.assistant}
+                  onAssistantInputChange={setAssistantInput}
+                  onSelectHint={setAssistantInput}
+                  onSubmit={() => {
+                    void sendAssistant();
+                  }}
+                  onToggleCollapsed={() => toggleCollapsedWidget("assistant")}
+                />
+              </div>
+            </div>
 
-      <ReportPanel
-        generatedReport={generatedReport}
-        canDownloadLogs={reportSession.transcripts.length > 0}
-        hasPendingVerification={hasPendingVerification}
-        onDownloadReport={downloadReport}
-        onDownloadLogs={downloadLogs}
-      />
+            <div ref={reportWidgetsRef} className="space-y-4">
+              <AudioSummaryWidget
+                reportSession={reportSession}
+                generatedReport={generatedReport}
+                isGenerating={isGeneratingReport}
+                canGenerate={canGenerateReport}
+                hasBlockingAnalysis={hasBlockingAnalysis}
+                isStale={isReportStale}
+                errorMessage={reportErrorMessage}
+                collapsed={collapsedWidgets.summary}
+                onGenerate={generateReport}
+                onToggleCollapsed={() => toggleCollapsedWidget("summary")}
+              />
 
-      <section className="grid gap-4 lg:grid-cols-[1.2fr_1.2fr_0.8fr]">
-        <TranscriptPanel items={transcriptItems} liveText={liveUtterance} />
-        <IntentPanel items={inferenceItems} />
-        <TemperatureMeter temperature={temperature} />
-      </section>
+              <ReportPanel
+                generatedReport={generatedReport}
+                canDownloadLogs={reportSession.transcripts.length > 0}
+                hasPendingVerification={hasPendingVerification}
+                collapsed={collapsedWidgets.report}
+                onDownloadReport={downloadReport}
+                onDownloadLogs={downloadLogs}
+                onToggleCollapsed={() => toggleCollapsedWidget("report")}
+              />
+            </div>
 
-      <footer className="flex flex-col gap-2 text-xs text-slate-500">
-        <span>
-          {isRecording
-            ? "録音中。2秒ごとに文字起こしと分析を更新します。"
-            : "Start で音声取得を開始してください。"}
-        </span>
-        <span>
-          入力レベル: {Math.round(inputLevel * 100)}% / 直近チャンク:{" "}
-          {lastChunkInfo}
-        </span>
-        <span>
-          トーン目安: 声量 {toneSummary.energy} / 話速 {toneSummary.pace} / 揺れ{" "}
-          {toneSummary.pitch}
-        </span>
-        {errorMessage && (
-          <span className="text-danger">{errorMessage}</span>
-        )}
-      </footer>
+            <div className="grid items-start gap-4 lg:grid-cols-2">
+              <div className="self-start">
+                <TranscriptPanel
+                  items={transcriptItems}
+                  liveText={liveUtterance}
+                  collapsed={collapsedWidgets.transcript}
+                  onToggleCollapsed={() => toggleCollapsedWidget("transcript")}
+                />
+              </div>
+              <div className="self-start">
+                <IntentPanel
+                  items={inferenceItems}
+                  collapsed={collapsedWidgets.intent}
+                  onToggleCollapsed={() => toggleCollapsedWidget("intent")}
+                />
+              </div>
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {errorMessage ? (
+        <footer className="text-xs text-danger">
+          {errorMessage}
+        </footer>
+      ) : null}
     </main>
   );
 }

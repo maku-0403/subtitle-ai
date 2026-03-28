@@ -2,7 +2,7 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "音声コンテンツ分析",
+  title: "空気の裏字幕 | IMPACT IN FACT",
   description: "動画、会議、セミナーの音声を要約・分析・検証するツール"
 };
 

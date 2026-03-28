@@ -4,8 +4,10 @@ interface ReportPanelProps {
   generatedReport: GeneratedReport | null;
   canDownloadLogs: boolean;
   hasPendingVerification: boolean;
+  collapsed?: boolean;
   onDownloadReport: () => void;
   onDownloadLogs: () => void;
+  onToggleCollapsed?: () => void;
 }
 
 function ClaimList({
@@ -70,8 +72,10 @@ export default function ReportPanel({
   generatedReport,
   canDownloadLogs,
   hasPendingVerification,
+  collapsed = false,
   onDownloadReport,
-  onDownloadLogs
+  onDownloadLogs,
+  onToggleCollapsed
 }: ReportPanelProps) {
   return (
     <section className="panel flex flex-col gap-4 p-4">
@@ -82,7 +86,7 @@ export default function ReportPanel({
             疑うべき点、肯定材料、否定材料だけを整理して表示します。
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             className="rounded-full border border-slate-300 px-5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             onClick={onDownloadReport}
@@ -99,46 +103,65 @@ export default function ReportPanel({
           >
             ログ保存
           </button>
+          {onToggleCollapsed ? (
+            <button
+              aria-label={collapsed ? "検証レポートを展開" : "検証レポートを折りたたむ"}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+              onClick={onToggleCollapsed}
+              type="button"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                {collapsed ? (
+                  <path d="M6 10l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                ) : (
+                  <path d="M6 14l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+                )}
+              </svg>
+            </button>
+          ) : null}
         </div>
       </div>
+      {collapsed ? null : (
+        <>
+          {hasPendingVerification ? (
+            <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
+              新しい検証結果が追加される可能性があります。必要なら要約・検証更新を実行してください。
+            </div>
+          ) : null}
 
-      {hasPendingVerification ? (
-        <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
-          新しい検証結果が追加される可能性があります。必要なら要約・検証更新を実行してください。
-        </div>
-      ) : null}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            検証ソースは関連度で絞り込んでいますが、判断前に都度リンク先を確認してください。
+          </div>
 
-      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-        検証ソースは関連度で絞り込んでいますが、判断前に都度リンク先を確認してください。
-      </div>
-
-      {generatedReport ? (
-        <div className="grid gap-4 lg:grid-cols-3">
-          <ClaimList
-            title="疑うべき点"
-            emptyLabel="現時点で大きな疑義は抽出されていません。"
-            accentClass="text-amber-700"
-            items={generatedReport.cautionPoints}
-          />
-          <ClaimList
-            title="肯定"
-            emptyLabel="肯定寄りに確認できた材料はまだありません。"
-            accentClass="text-emerald-700"
-            items={generatedReport.supportingPoints}
-          />
-          <ClaimList
-            title="否定"
-            emptyLabel="否定寄りに確認できた材料はまだありません。"
-            accentClass="text-rose-700"
-            items={generatedReport.contradictingPoints}
-          />
-        </div>
-      ) : (
-        <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4">
-          <p className="text-sm text-slate-400">
-            まだ検証レポートは生成されていません。
-          </p>
-        </div>
+          {generatedReport ? (
+            <div className="grid gap-4 lg:grid-cols-3">
+              <ClaimList
+                title="疑うべき点"
+                emptyLabel="現時点で大きな疑義は抽出されていません。"
+                accentClass="text-amber-700"
+                items={generatedReport.cautionPoints}
+              />
+              <ClaimList
+                title="肯定"
+                emptyLabel="肯定寄りに確認できた材料はまだありません。"
+                accentClass="text-emerald-700"
+                items={generatedReport.supportingPoints}
+              />
+              <ClaimList
+                title="否定"
+                emptyLabel="否定寄りに確認できた材料はまだありません。"
+                accentClass="text-rose-700"
+                items={generatedReport.contradictingPoints}
+              />
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4">
+              <p className="text-sm text-slate-400">
+                まだ検証レポートは生成されていません。
+              </p>
+            </div>
+          )}
+        </>
       )}
     </section>
   );

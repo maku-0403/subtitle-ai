@@ -2,8 +2,49 @@ import { NextResponse } from "next/server";
 import { extractJsonObject } from "@/lib/validators";
 import { getSakuraChatConfig, sakuraFetch } from "@/lib/sakura";
 import { ASSISTANT_SYSTEM_PROMPT, buildAssistantUserPrompt } from "@/lib/assistantPrompts";
+import { getTavilyConfig, tavilySearch } from "@/lib/tavily";
 
 export const runtime = "nodejs";
+
+async function runAssistantSearch(question: string) {
+  const tavilyConfig = getTavilyConfig();
+  if (!tavilyConfig) {
+    return null;
+  }
+
+  try {
+    const response = await tavilySearch(question, tavilyConfig);
+    const results = response.results.slice(0, 4).map((item) => {
+      let domain = "";
+      try {
+        domain = new URL(item.url).hostname.replace(/^www\./, "");
+      } catch {
+        domain = "";
+      }
+
+      return {
+        title: item.title,
+        url: item.url,
+        domain,
+        snippet: item.content,
+        published_date: item.published_date
+      };
+    });
+
+    if (!response.answer && results.length === 0) {
+      return null;
+    }
+
+    return {
+      query: question,
+      answer: response.answer,
+      results
+    };
+  } catch (error) {
+    console.error("Assistant search error", error);
+    return null;
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -49,6 +90,7 @@ export async function POST(request: Request) {
       body?.externalCheck && typeof body.externalCheck === "object"
         ? body.externalCheck
         : null;
+    const externalSearch = await runAssistantSearch(question);
 
     const messages = [
       { role: "system", content: ASSISTANT_SYSTEM_PROMPT },
@@ -64,7 +106,8 @@ export async function POST(request: Request) {
           session_context: sessionContext,
           verification_topics: verificationTopics,
           suggested_queries: suggestedQueries,
-          external_check: externalCheck
+          external_check: externalCheck,
+          external_search: externalSearch
         })
       }
     ];

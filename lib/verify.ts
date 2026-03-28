@@ -151,7 +151,7 @@ export function normalizeVerification(
 
   const summary =
     typeof raw.summary === "string" && raw.summary.trim().length > 0
-      ? raw.summary.trim().slice(0, 60)
+      ? raw.summary.trim()
       : "要確認の可能性があります";
 
   const publicTopics = Array.isArray(raw.public_topics)

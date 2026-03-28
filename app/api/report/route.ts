@@ -288,7 +288,7 @@ function buildFallbackReport(reportSession: ReportSessionData): Omit<
 
   const verificationOverview = `検証結果は ${reportSession.verifications.length} 件あります。要確認になった項目や、公開ソースで支持・否定された主張を以下に整理しています。`;
 
-  const title = "音声コンテンツ検証レポート";
+  const title = "空気の裏字幕 検証レポート";
   const report = {
     title,
     summaryOverview,

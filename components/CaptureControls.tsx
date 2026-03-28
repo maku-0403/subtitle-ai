@@ -15,10 +15,13 @@ interface CaptureControlsProps {
   isRecording: boolean;
   isProcessing: boolean;
   isGeneratingReport: boolean;
+  compactMode?: boolean;
+  collapsed?: boolean;
   onStart: () => void;
   onStop: () => void;
   onClear: () => void;
   onGenerateReport: () => void;
+  onToggleCollapsed?: () => void;
 }
 
 export default function CaptureControls({
@@ -36,11 +39,70 @@ export default function CaptureControls({
   isRecording,
   isProcessing,
   isGeneratingReport,
+  compactMode = false,
+  collapsed = false,
   onStart,
   onStop,
   onClear,
-  onGenerateReport
+  onGenerateReport,
+  onToggleCollapsed
 }: CaptureControlsProps) {
+  if (compactMode) {
+    return (
+      <div className="panel flex flex-col gap-3 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="panel-title">コンテンツ設定</span>
+            </div>
+            {collapsed ? (
+              <p className="mt-1 text-xs text-slate-500">
+                種別、言語、入力方式、分析メモを確認できます。
+              </p>
+            ) : null}
+          </div>
+          {onToggleCollapsed ? (
+            <button
+              aria-label={collapsed ? "コンテンツ設定を展開" : "コンテンツ設定を折りたたむ"}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+              onClick={onToggleCollapsed}
+              type="button"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                {collapsed ? (
+                  <path d="M6 10l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                ) : (
+                  <path d="M6 14l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+                )}
+              </svg>
+            </button>
+          ) : null}
+        </div>
+        {!collapsed ? (
+          <>
+            <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+              <span className="pill">{contentType}</span>
+              <span className="pill">
+                言語: {inputLanguage === "auto" ? "自動" : inputLanguage.toUpperCase()}
+              </span>
+              <span className="pill">
+                入力: {captureMode === "tab" ? "タブ音声" : "マイク入力"}
+              </span>
+            </div>
+            <div className="rounded-xl border border-slate-200/70 bg-white/80 px-3 py-3">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                分析メモ
+              </div>
+              <div className="mt-2 text-sm leading-6 text-slate-700">
+                {analysisNote || "分析メモを入力してください"}
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="panel flex flex-col gap-4 p-4">
       <div className="flex flex-col gap-3">
